@@ -16,7 +16,7 @@ The goal of this project is to build and evaluate predictive models for classify
 
 ## Main Results
 
-- The final ensemble model (Random Forest, Naive Bayes, Gradient Boosted Trees) achieved an accuracy of 0.8684807, a sensitivity of 0.72, and a specificity of 0.94 on the validation set.
+- The final ensemble model (Random Forest, Naive Bayes, Gradient Boosted Trees, excluding K-Nearest Neighbors) achieved an accuracy of 0.8684807, a sensitivity of 0.72, and a specificity of 0.94 on the validation set.
 - Random Forest and Gradient Boosted Trees were the strongest individual models, but the ensemble approach delivered the highest overall accuracy.
 - All work was completed in R using R Markdown.
 
