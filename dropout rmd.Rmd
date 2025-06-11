@@ -1,0 +1,1063 @@
+---
+title: "**Predict Students' Dropout and Academic Success**"
+subtitle: 'HarvardX PH125.9x - Data Science Capstone 2'
+author: 'Jasmine Zhang'
+date: "_`r format(Sys.Date(), '%d %B, %Y')`_"
+output:
+  pdf_document:
+    df_print: kable
+    number_sections: yes
+    toc: yes
+    fig_caption: yes
+  html_document: default
+fontsize: 11pt
+include-before: '`\newpage{}`{=latex}'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+# 0. Load Packages
+library(readr)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(RColorBrewer)
+library(scales)
+library(knitr)
+library(kableExtra)
+
+rawdata <- read_csv2("https://raw.githubusercontent.com/jasmineyz/ds-capstone2-dropoutprediction/refs/heads/main/predict%20student%20dropout%20data.csv")
+clean <- rawdata
+
+# Adjust figures closer to page width
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.align = "center",
+  fig.width = 9,     # increase width
+  fig.height = 4,    # keep height moderate
+  out.width = "100%" # make plot as wide as the text block
+)
+```
+\newpage
+
+# **Introduction**  
+
+Student retention and academic success remain critical challenges in higher education worldwide. As student populations diversify and institutions strive to maintain financial sustainability, understanding and mitigating the drivers of student dropout have become central to effective educational management. Educational Data Mining (EDM) has emerged as a powerful interdisciplinary field, enabling universities to harness data-driven methods to identify at-risk students and optimize retention strategies. The ability to accurately predict student dropout not only helps institutions improve academic outcomes but also reduces financial losses and supports broader educational equity goals.
+
+This project uses an open dataset from the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/697/predict+students+dropout+and+academic+success). This dataset is supported by program SATDAP - Capacitação da Administração Pública under grant POCI-05-5762-FSE-000191, Portugal.The dataset comprises 4,424 anonymized records from a Portuguese higher education institution, integrating information from multiple administrative sources. It includes macroeconomic context, student demographics, academic preparation and performance, and program characteristics, capturing a wide array of factors that are hypothesized to influence dropout and academic success. It is important to note that certain variables, such as credit hour, major classification, and application mode, differ from those commonly used in the US system. These distinctions will be explored in the subsequent exploratory data analysis steps.
+
+The core objective of this study is to develop and evaluate predictive models that classify students into risk categories at the end of the normal course duration. Specifically, the target is formulated as a binary outcome—distinguishing between students who drop out and those who are considered on-track (including both enrolled and graduated students). Recognizing the complexity of dropout as a phenomenon influenced by both internal (endogenous) and external (exogenous) factors, the project incorporates features such as prior academic achievement, parental education, economic context, and course characteristics to improve predictive performance.
+
+The workflow for this project consists of several stages: data preparation and cleaning, exploratory analysis, and model building, model selection, and performance validation. We compare several machine learning approaches including Random Forests, k-Nearest Neighbors, Naive Bayes, and Gradient Boosted Trees, using cross-validation and hold-out testing for robust performance assessment. To improve predictive performance, two ensemble approaches are employed: first, a simple majority voting ensemble incorporating all models; second, a refined ensemble that includes only the three best-performing models. Assuming that dropout is coded as the positive class (dropout = 1), in the end, the chosen ensemble model achieves a sensitivity of 0.72, a specificity of 0.94, and an overall accuracy of 0.87.
+
+## Dataset Summary
+
+The initial distribution of the target variable is presented in Table 1. This breakdown shows that roughly one-third of students dropped out, while the remainder either remained enrolled or successfully graduated.
+
+```{r dataset-summary, echo=FALSE, message=FALSE, warning=FALSE}
+# Summarize target result
+rawdata %>%
+  count(Target, name = "Count") %>%
+  mutate(Percentage = round(100 * Count / sum(Count), 1)) %>%
+  kable(
+    caption = "Distribution of Target Results",
+    align = "ccr",
+    booktabs = TRUE,
+    format = "latex",
+    linesep = ""
+  ) %>%
+  kable_styling(
+    full_width = TRUE,
+    position = "center",
+    latex_options = c("scale_down", "hold_position")
+  )
+```
+
+However, for the purpose of predictive modeling and interpretability, we recode the target variable into two categories:
+
+-**dropout**: students who left their studies before completion
+
+-**on_track**: students who are either still enrolled or have graduated
+
+This binary classification allows us to focus on the most actionable question for institutional intervention: it streamlines the analysis by focusing on the distinction between students who disengage and those who persist in the academic pipeline. 
+
+## Variable Processing
+
+To ensure clarity, all 37 variables in the original dataset were carefully reviewed, cleaned, and organized into four major categories. Below, we detail the treatment of each variable, specifying transformations, recoding, or removal as appropriate.
+
+```{r dataset-clean, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+## 1.1. Target variable (combine enrolled/graduate; relabel/factor)
+clean$Target <- tolower(trimws(clean$Target))
+clean$Target[clean$Target %in% c("enrolled", "graduate")] <- "on_track"
+clean$Target <- factor(clean$Target, levels = c("dropout", "on_track"))
+
+# Check levels
+setNames(seq_along(levels(clean$Target)), levels(clean$Target))
+
+## 1.2. Marital Status (map codes to labels, drop old col)
+clean$Marital_Status <- factor(
+  clean$`Marital status`,
+  levels = 1:6,
+  labels = c("single", "married", "widower", "divorced", "facto_union", "legally_separated")
+)
+
+clean$`Marital status` <- NULL
+
+# check mapping
+setNames(seq_along(levels(clean$Marital_Status)), levels(clean$Marital_Status))
+
+## 1.3. Application Mode (code to label, drop old col)
+clean$Application_mode <- factor(clean$`Application mode`)
+
+code_labels <- c(
+  "1" = "1st_phase_general",
+  "2" = "Ordinance_612_93",
+  "5" = "1st_phase_special_Azores",
+  "7" = "other_higher_courses",
+  "10" = "Ordinance_854_B_99",
+  "15" = "international_student",
+  "16" = "1st_phase_special_Madeira",
+  "17" = "2nd_phase_general",
+  "18" = "3rd_phase_general",
+  "26" = "Ordinance_533_A_b2",
+  "27" = "Ordinance_533_A_b3",
+  "39" = "over_23",
+  "42" = "transfer",
+  "43" = "change_of_course",
+  "44" = "tech_diploma",
+  "51" = "change_institution_course",
+  "53" = "short_cycle_diploma",
+  "57" = "change_inst_intl"
+)
+# Convert codes to character for matching
+clean$Application_mode <- factor(
+  as.character(clean$`Application mode`),
+  levels = names(code_labels),
+  labels = code_labels
+)
+
+setNames(seq_along(levels(clean$Application_mode)), levels(clean$Application_mode))
+
+rm(code_labels)
+clean$`Application mode` <- NULL
+
+## 1.4. Application Order (keep as integer for models to recognize the ordinal nature of the variable.)
+clean$Application_order <- as.integer(clean$`Application order`)
+clean$`Application order` <- NULL
+
+## 1.5. Course/Major (rename and label)
+names(clean)[names(clean) == "Course"] <- "Major"
+
+clean$Major <- factor(clean$Major)
+major_labels <- c(
+  "33" = "Biofuel_Production_Tech",
+  "171" = "Animation_Multimedia_Design",
+  "8014" = "Social_Service_Evening",
+  "9003" = "Agronomy",
+  "9070" = "Communication_Design",
+  "9085" = "Veterinary_Nursing",
+  "9119" = "Informatics_Engineering",
+  "9130" = "Equinculture",
+  "9147" = "Management",
+  "9238" = "Social_Service",
+  "9254" = "Tourism",
+  "9500" = "Nursing",
+  "9556" = "Oral_Hygiene",
+  "9670" = "Advertising_Marketing_Mgmt",
+  "9773" = "Journalism_Communication",
+  "9853" = "Basic_Education",
+  "9991" = "Management_Evening"
+)
+
+clean$Major <- factor(
+  as.character(clean$Major),
+  levels = names(major_labels),
+  labels = major_labels
+)
+
+setNames(levels(clean$Major), names(major_labels))
+
+rm(major_labels)
+clean$Course <- NULL
+
+## 1.6. Column renaming and removals (to simplify and avoid redundancy)
+names(clean)[names(clean) == "Daytime/evening attendance"] <- "Is_Daytime_Attendance"
+
+# Note: "Previous qualification" and "Previous qualification (grade)" are related.
+# To avoid redundancy and for modeling, we will keep only "Previous qualification (grade)".
+# We will remove "Previous qualification" and rename "Previous qualification (grade)" for code-friendliness.
+clean$`Previous qualification` <- NULL
+
+names(clean)[names(clean) == "Previous qualification (grade)"] <- "PriorGrade"
+
+# Note: We are not going to differentiate by specific nationality.
+# Therefore, we will delete the "Nacionality" column and only use the "International" column as the indicator for international status.
+
+clean$Nacionality <- NULL
+
+names(clean)[names(clean) == "International"] <- "Is_International"  # 1 = yes, 0 = no
+
+## 1.7. Parent education: make binary indicator
+# Note: The detailed parental qualification and occupation columns are highly granular.
+# For modeling, we will use a single binary variable: "Family_Postsecondary_Edu".
+# It is 1 if either parent attained postsecondary (college+) education, 0 otherwise.
+# Postsecondary codes are: 2, 3, 4, 5, 6, 40, 41, 42, 43, 44
+postsec_codes <- c(2, 3, 4, 5, 6, 40, 41, 42, 43, 44)
+
+clean$Parent_Higher_Edu <-
+  ifelse(
+    clean$`Mother's qualification` %in% postsec_codes |
+      clean$`Father's qualification` %in% postsec_codes, 1, 0
+  )
+
+# Remove detailed columns
+clean$`Mother's qualification` <- NULL
+clean$`Father's qualification` <- NULL
+clean$`Mother's occupation` <- NULL
+clean$`Father's occupation` <- NULL
+
+rm(postsec_codes)
+
+## 1.8. Other column cleanup and renaming
+names(clean)[names(clean) == "Admission grade"] <- "AdmissionGrade"
+
+names(clean)[names(clean) == "Educational special needs"] <- "SpecialNeeds"
+
+# Note: "Tuition fees up to date" is being removed because it is not relevant 
+# for predicting student dropout or academic success at the time of admission, 
+# and may reflect outcomes rather than predictors.
+clean$`Tuition fees up to date` <- NULL
+names(clean)[names(clean) == "Gender"] <- "Is_Male"  # 1 = male, 0 = female
+names(clean)[names(clean) == "Scholarship holder"] <- "HasScholarship"
+names(clean)[names(clean) == "Age at enrollment"] <- "AgeAtEnroll"
+
+## 1.9. Curricular units 1st/2nd sem: keep only "grade" and "enrolled"
+# Note: For modeling student success, we are keeping only:
+# - "Curricular units 1st sem (grade)" (average grade): This reflects the student's overall academic performance in the first semester, which is highly predictive of future success.
+# - "Curricular units 1st sem (enrolled)" (number registered): This indicates the student's course load/engagement.
+# We are removing the other 1st semester curricular unit columns ("credited", "approved", "evaluations", "without evaluations") because they are either highly correlated, less directly related to current academic progress, or add redundancy.
+clean$`Curricular units 1st sem (credited)` <- NULL
+clean$`Curricular units 1st sem (evaluations)` <- NULL
+clean$`Curricular units 1st sem (approved)` <- NULL
+clean$`Curricular units 1st sem (without evaluations)` <- NULL
+
+names(clean)[names(clean) == "Curricular units 1st sem (grade)"] <- "Sem1_AvgGrade"
+names(clean)[names(clean) == "Curricular units 1st sem (enrolled)"] <- "Sem1_UnitsEnrolled"
+
+clean$Sem1_AvgGrade <- as.numeric(clean$Sem1_AvgGrade)
+clean$Sem1_AvgGrade <- round(clean$Sem1_AvgGrade, 1)
+
+# Do similar thing to the second semester
+clean$`Curricular units 2nd sem (credited)` <- NULL
+clean$`Curricular units 2nd sem (evaluations)` <- NULL
+clean$`Curricular units 2nd sem (approved)` <- NULL
+clean$`Curricular units 2nd sem (without evaluations)` <- NULL
+
+names(clean)[names(clean) == "Curricular units 2nd sem (grade)"] <- "Sem2_AvgGrade"
+names(clean)[names(clean) == "Curricular units 2nd sem (enrolled)"] <- "Sem2_UnitsEnrolled"
+
+clean$Sem2_AvgGrade <- as.numeric(clean$Sem2_AvgGrade)
+clean$Sem2_AvgGrade <- round(clean$Sem2_AvgGrade, 1)
+
+## 1.10. Macroeconomic
+# Note: We are removing the "GDP" variable because job opportunity (as reflected by the unemployment rate)
+# is a more direct and relevant factor for student outcomes in our analysis.
+# Since we are already including the unemployment rate, GDP is not needed.
+names(clean)[names(clean) == "Unemployment rate"] <- "UnemploymentRate"
+
+# UnemploymentRate fix
+clean$UnemploymentRate <- clean$UnemploymentRate / 10
+
+names(clean)[names(clean) == "Inflation rate"] <- "InflationRate"
+clean$InflationRate <- as.numeric(clean$InflationRate)
+
+clean$GDP <- NULL
+```
+
+**Category 1. Macroeconomic Context**
+
+- **`Unemployment rate`**  
+  Retained as a numeric variable and rescaled for interpretability.
+
+- **`Inflation rate`**  
+  Retained as a numeric variable, with type conversions as needed.
+
+- **`GDP`**  
+  *Deleted.* Removed due to redundancy, as unemployment and inflation rates more directly reflect students’ economic context.
+
+**Category 2. Student Demographics**
+
+- **`Gender`**  
+  Recoded to a binary indicator (`Is_Male`) for interpretability.
+
+- **`Age at enrollment`**  
+  Retained as a numeric variable.
+
+- **`Marital status`**  
+  Recoded from numeric codes to descriptive categories (e.g., *single*, *married*).
+
+- **`Displaced`**  
+  Retained as a binary indicator.
+
+- **`International`**  
+  Retained as a binary indicator (`Is_International`). The more granular `Nacionality` column was removed to avoid fragmentation and simplify modeling.
+
+- **`Educational special needs`**  
+  Retained as a binary variable (`SpecialNeeds`).
+
+- **`Parent education and occupation`**  
+  All detailed columns were consolidated into a single binary indicator (`Parent_Higher_Edu`), reflecting whether either parent attained postsecondary education. The original detailed columns were removed to reduce dimensionality and prevent overfitting.
+
+- **`Scholarship holder`**  
+  Retained as a binary variable.
+
+- **`Debtor`**  
+  Retained as a binary variable.
+
+**Category 3. Academic Preparation and Performance**
+
+- **`Previous qualification & Previous qualification (grade)`**  
+  Only “Previous qualification (grade)” was retained (renamed `PriorGrade`), as it more directly reflects academic preparation. The categorical “Previous qualification” was deleted.
+
+- **`Admission grade`**  
+  Retained and renamed (`AdmissionGrade`) for clarity.
+
+- **`Curricular units (1st and 2nd semester)`**  
+  For both semesters, only the average grade (`Sem1_AvgGrade`, `Sem2_AvgGrade`) and units enrolled (`Sem1_UnitsEnrolled`, `Sem2_UnitsEnrolled`) were retained, as they best capture academic engagement and performance. All other related variables (credits, approvals, evaluations, etc.) were removed due to redundancy or limited predictive value.
+
+- **`Application mode`**  
+  Recoded from numeric codes to descriptive labels and renamed (`Application_mode`) for interpretability.
+
+- **`Application order`**  
+  Retained as an integer variable, reflecting the priority ranking of each student's application.
+
+**Category 4. Program Characteristics**
+
+- **`Course`**  
+  Renamed as `Major` and recoded to descriptive program names for interpretability.
+
+- **`Daytime/evening attendance`**  
+  Renamed as `Is_Daytime_Attendance` and recoded as a binary variable indicating attendance mode.
+
+**Deleted Variables**
+
+Several variables were removed from the dataset during preprocessing. The rationale for each removal is detailed below:
+
+- **`Previous qualification`**  
+  Removed because this categorical variable was redundant given the retention of “Previous qualification (grade)”, which provides more direct and actionable information on academic preparedness.
+
+- **`Nacionality`**  
+  Removed because analysis focused on domestic versus international status using the binary “International” indicator, rather than tracking specific nationalities. This reduces fragmentation and simplifies modeling.
+
+- **`Mother’s qualification, Father’s qualification, Mother’s occupation, Father’s occupation`**  
+  Removed because these detailed parental background variables were consolidated into a single binary indicator (`Parent_Higher_Edu`) capturing whether either parent attained postsecondary education. This reduces dimensionality and minimizes the risk of overfitting.
+
+- **`Tuition fees up to date`**  
+  Removed because this variable may reflect student outcomes or institutional processes after admission, introducing potential data leakage and offering little value for early prediction of dropout or academic success.
+
+- **`Curricular units 1st sem (credited), Curricular units 1st sem (evaluations), Curricular units 1st sem (approved), Curricular units 1st sem (without evaluations), Curricular units 2nd sem (credited), Curricular units 2nd sem (evaluations), Curricular units 2nd sem (approved), Curricular units 2nd sem (without evaluations)`**  
+  Removed because these variables are highly correlated with retained measures of academic engagement (“average grade” and “units enrolled”), add redundancy, and offer limited incremental predictive value.
+
+- **`GDP`**  
+  Removed because in the presence of unemployment and inflation rates, GDP does not provide additional explanatory power and is less directly related to immediate student outcomes.
+  
+```{r - partition}
+# Create the partition index 90% train, 10% validation
+set.seed(123) 
+idx <- createDataPartition(clean$Target, times = 1, p = 0.9, list = FALSE)
+train_data <- clean[idx, ]      # 90% for model training/cross-validation
+final_holdout <- clean[-idx, ] # 10% for final model evaluation
+
+# Ensure validation data has only seen categories (by "Major", etc.)
+temp <- final_holdout
+
+validation <- temp %>%
+  semi_join(train_data, by = "Major") %>%
+  semi_join(train_data, by = "Application_mode") %>%
+  semi_join(train_data, by = "Marital_Status") %>%
+  semi_join(train_data, by = "Is_Daytime_Attendance") %>%
+  semi_join(train_data, by = "Parent_Higher_Edu") %>%
+  semi_join(train_data, by = "SpecialNeeds") %>%
+  semi_join(train_data, by = "Is_International")
+
+removed <- anti_join(temp, validation)
+
+train_data <- rbind(train_data, removed)
+
+# Clean up
+rm(temp, removed, final_holdout) 
+```  
+\newpage
+
+# **Exploratory Data Analysis**
+
+## Macroeconomic Context
+### Inflation Rate
+Figure 1 shows how students in the dataset are distributed across different inflation rate cohorts. It is important to note that the inflation rate variable is not smoothly continuous in this dataset; rather, it appears in a set of discrete steps, likely corresponding to one value for each cohort or year. Most inflation rate categories have between 300 and 500 students, but there is a clear peak at 1.4%, where nearly 800 students are observed. This indicates that, during the years covered by the dataset, a significant portion of students experienced an inflation rate around this value, while fewer students were present in periods with either lower or higher inflation.
+
+```{r - fig1, fig.cap="Counts by Unique Inflation Rate"}
+# Ensure InflationRate is numeric
+train_data$InflationRate <- as.numeric(train_data$InflationRate)
+
+# Barplot: Frequency of each unique Inflation Rate value
+inflation_counts <- train_data %>%
+  count(InflationRate)
+
+ggplot(inflation_counts, aes(x = as.factor(InflationRate), y = n)) +
+  geom_bar(stat = "identity", fill = "#b3cde3", color = "white", width = 0.7) +
+  geom_text(aes(label = n), vjust = -0.3, size = 3.5) +
+  labs(
+    x = "Inflation Rate (%)",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 14) 
+```  
+
+Figure 2 provides a closer look at how the student outcome—specifically, whether a student dropped out or stayed on track—varies by inflation rate. For each inflation rate, the bar is divided into percentages of “dropout” and “on_track” students. In most cohorts, the majority of students remain on track, but the proportion of dropouts fluctuates noticeably. For example, at an inflation rate of -0.3%, the dropout rate rises to over 40%, while at 0.5%, it drops to just 23%. Overall, there is no clear linear relationship between inflation rate and student dropout, but certain cohorts demonstrate notably higher or lower dropout proportions, suggesting that macroeconomic context may influence student persistence in specific circumstances.
+  
+```{r - fig2, fig.cap="Target Status Breakdown by Inflation Rate"}
+# Stacked bar: Target status breakdown by Inflation Rate
+inf_target <- train_data %>%
+  group_by(InflationRate, Target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(InflationRate) %>%
+  mutate(perc = 100 * n / sum(n)) %>%
+  ungroup()
+
+ggplot(inf_target, aes(x = factor(InflationRate), y = perc, fill = Target)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.8) +
+  geom_text(
+    aes(label = ifelse(perc > 6, paste0(round(perc, 1), "%"), "")),
+    position = position_stack(vjust = 0.5), size = 3
+  ) +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 25),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "Inflation Rate (%)",
+    y = "Percentage"
+  ) +
+  theme_minimal(base_size = 13) 
+```    
+
+### Unemployment rate
+Figure 3 shows the relationship between unemployment rate and student outcomes. It displays the percentage of students classified as “dropout” or “on_track” for each unique unemployment rate value in the dataset. Similar to the inflation rate, the unemployment rate variable is not continuous; instead, it appears in discrete increments. This likely reflects economic conditions that correspond to particular years or cohorts.
+
+In most unemployment rate categories, a larger proportion of students remain on track compared to those who drop out. However, the dropout rate varies noticeably across unemployment levels. For example, the dropout percentage is lowest at an unemployment rate of 12.4 percent (23 percent) and increases as unemployment rises, reaching 40.4 percent at 16.2 percent. This pattern suggests a potential association between higher unemployment rates and an increased risk of student dropout.
+
+Including unemployment rate as a predictor in dropout modeling is justified for several reasons. The unemployment rate captures broader macroeconomic conditions that can influence students’ financial stability, perceived job prospects, and overall stress. These factors are known to affect educational persistence. By accounting for changes in the economic environment, the model can better distinguish between individual-level effects and those driven by external economic pressures.
+
+```{r - fig3, fig.cap="Target Status Breakdown by Unemployment Rate"}
+# Stacked bar: Target status by Unemployment Rate
+unemp_target <- train_data %>%
+  group_by(UnemploymentRate, Target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(UnemploymentRate) %>%
+  mutate(perc = 100 * n / sum(n)) %>%
+  ungroup()
+
+ggplot(unemp_target, aes(x = factor(UnemploymentRate), y = perc, fill = Target)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(
+    aes(label = ifelse(perc > 6, paste0(round(perc, 1), "%"), "")),
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 25),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "Unemployment Rate (%)",
+    y = "Percentage"
+  ) +
+  theme_minimal(base_size = 13) 
+```  
+
+## Student Demographics
+### Gender, Displaced Status, International Status, Special Needs, Parent Education, Financial Aid, Loan Borrowing
+
+Figure 4 shows the percentage of students classified as “dropout” and “on_track” within each subgroup of several key demographic variables. Each subplot represents a different binary demographic variable. Across most variables, students in the “on_track” category make up the majority. However, the proportion of dropouts differs noticeably depending on demographic group.
+
+Among students with outstanding debt, 38.7% dropped out compared to 28.4% of those without debt. This suggests that financial stress may contribute significantly to dropout risk. For displaced students, the dropout rate is 27.5%, lower than the 37.7% observed among non-displaced students, possibly reflecting the presence of institutional support mechanisms that benefit displaced students.
+
+Scholarship status has a particularly strong effect. Only 12.3% of scholarship recipients dropped out, in contrast to a much higher 38.7% among those without scholarships, highlighting the important role of financial aid in promoting retention. When considering international status, 28.7% of international students dropped out compared to 32.2% of domestic students. This may indicate that international students are, on average, more motivated or benefit from additional institutional support.
+
+The analysis also reveals marked gender differences. Male students had a dropout rate of 44.9%, nearly twice the 25.3% rate seen among female students, underscoring gender as a significant predictor of persistence. Family educational background also appears to matter: students whose parents have postsecondary education (`Parent_Higher_Edu: Yes`) have a dropout rate of 30.5%, lower than the 32.5% for those whose parents do not have such a background.
+
+Students with special needs exhibit a dropout rate of 37%, higher than the 32.1% for students without special needs. This suggests that additional challenges faced by these students may not be fully addressed by current institutional support structures.
+
+```{r - fig4, fig.cap="Percentage of Target Status by Student Demographic Variables", fig.height = 8}
+# Quick summary table for binary demographic variables
+counts <- c(
+  Total = nrow(train_data),
+  Male = sum(train_data$Is_Male == 1),
+  Displaced = sum(train_data$Displaced == 1),
+  International = sum(train_data$Is_International == 1),
+  SpecialNeeds = sum(train_data$SpecialNeeds == 1),
+  ParentCollege = sum(train_data$Parent_Higher_Edu == 1),
+  HasScholarship = sum(train_data$HasScholarship == 1),
+  Debtor = sum(train_data$Debtor == 1)
+)
+
+# Calculate percentages (except Total)
+percentages <- round(100 * counts / counts["Total"], 1)
+
+# Combine into a two-row table
+summary_table <- rbind(Count = counts, Percentage = percentages)
+
+# Faceted barplots: Each binary variable, breakdown by Target
+facet_vars <- c("Is_Male", "Displaced", "Is_International",
+                "SpecialNeeds", "Parent_Higher_Edu", "HasScholarship", "Debtor")
+
+# Prepare long data
+facet_data <- train_data %>%
+  select(Target, all_of(facet_vars)) %>%
+  pivot_longer(-Target, names_to = "Variable", values_to = "Value") %>%
+  mutate(Value = ifelse(Value == 1, "Yes", "No"))
+
+# Summarize and calculate percentages
+facet_summary <- facet_data %>%
+  group_by(Variable, Value, Target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Variable, Value) %>%
+  mutate(percentage = 100 * n / sum(n)) %>%
+  ungroup()
+
+# Plot faceted barplots
+ggplot(facet_summary, aes(x = Value, y = percentage, fill = Target)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(
+    aes(label = round(percentage, 1)),
+    position = position_dodge(width = 0.9),
+    vjust = -0.3,
+    size = 2.8
+  ) +
+  scale_fill_brewer(palette = "Pastel1") +
+  facet_wrap(~Variable, scales = "free_x") +
+  labs(
+    x = "",
+    y = "Percentage"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+``` 
+
+### Age at Enrollment
+Figure 5 shows the distribution of age at enrollment for students by their eventual outcome. The density plot reveals that most students enroll at a traditional college-going age, with a pronounced peak around 18 to 20 years old. Within this age group, the proportion of students who stay on track is noticeably higher than those who drop out, as indicated by the larger blue area under the curve.
+
+As age at enrollment increases, the density for both groups declines, but a key difference emerges: the dropout group has a relatively higher density among older entrants compared to the on-track group. In other words, students who begin their studies at a later age are more likely to drop out than those who enroll immediately after high school. The “dropout” curve remains consistently above the “on_track” curve for most ages above 25, suggesting that non-traditional or adult learners face additional challenges in persisting to completion.
+
+These results highlight age at enrollment as an important predictor of student success. The increased risk of dropout among older entrants may reflect factors such as work and family obligations, competing priorities, or gaps in academic preparation. Including age at enrollment in predictive models can improve the accuracy of risk identification and support targeted interventions for students who may benefit from additional resources.
+
+```{r - fig5, fig.cap="Distribution of Age at Enrollment by Target Status"}
+ggplot(train_data, aes(x = AgeAtEnroll, fill = Target)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(
+    x = "Age at Enrollment",
+    y = "Density"
+  ) +
+  theme_minimal()
+``` 
+
+### Marital Status
+
+Figure 6 shows the proportion of students across different categories of marital status. The plot reveals substantial variation in dropout rates among these groups. For example, students who are single have a dropout rate of 30.3 percent, while those who are married experience a much higher dropout rate of 46.2 percent. Similarly, the dropout rates for widowed, divorced, and those in a facto union are all above 33 percent, and the rate for legally separated students reaches as high as 75 percent.
+
+This considerable variability suggests that marital status may affect student persistence, potentially reflecting differences in life responsibilities, support systems, and competing obligations outside of school. Given the wide range of dropout rates observed between categories, the marital status is included as a predictor in the model. 
+
+```{r - fig6, fig.cap="Proportion of Target Status by Marital Status"}
+marital_prop <- train_data %>%
+  group_by(Marital_Status, Target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Marital_Status) %>%
+  mutate(prop = n / sum(n),
+         perc = round(100 * prop, 1),
+         ypos = cumsum(prop) - 0.5 * prop)  # position for labels
+
+ggplot(marital_prop, aes(x = Marital_Status, y = prop, fill = Target)) +
+  geom_bar(stat = "identity", position = "fill") +
+  geom_text(aes(label = ifelse(perc > 2, paste0(perc, "%"), "")),
+            position = position_stack(vjust = 0.5), size = 3) +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    x = "Marital Status",
+    y = "Percentage"
+  ) +
+  theme_minimal()
+``` 
+
+## Academic Preparation and Performance 
+
+### PriorGrade
+Figure 7 shows the density distribution of prior grades for students. The plot reveals that the distribution for both groups peaks in the same general range, but there are noticeable differences in the shape and height of the curves.
+
+Students who dropped out tend to have a higher density at lower prior grade values, with the dropout curve peaking more sharply at lower grades compared to the on-track group. In contrast, students who remained on track show a relatively higher density at moderate and higher prior grade values. This indicates that students who enter higher education with stronger academic preparation, as reflected by higher prior grades, are more likely to persist and succeed. 
+
+```{r - fig7, fig.cap="Prior Grade Density by Target Status"}
+ggplot(train_data, aes(x = PriorGrade, fill = Target)) +
+  geom_density(alpha = 0.4) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(
+    x = "Prior Grade",
+    y = "Density"
+  ) +
+  theme_minimal()
+```
+
+### AdmissionGrade
+
+Figure 8 shows the density distribution of admission grades for students. The two curves reveal important differences in academic profiles at entry. Students who dropped out generally had lower admission grades, as indicated by the higher density of the dropout curve at the lower end of the scale. In contrast, the on-track group shows a peak at higher admission grades and maintains higher density values throughout the upper grade ranges.
+
+This pattern suggests that students entering with stronger admission grades are more likely to stay on track and complete their studies, while those admitted with lower grades are at greater risk of leaving early. The overlap between the two distributions also highlights that admission grade alone does not fully explain student outcomes, but it is nonetheless an indicator of future academic success.
+
+```{r - fig8, fig.cap="Admission Grade Density by Target Status"}
+ggplot(train_data, aes(x = AdmissionGrade, fill = Target)) +
+  geom_density(alpha = 0.4) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(
+    x = "Admission Grade",
+    y = "Density"
+  ) +
+  theme_minimal()
+```
+
+### 1st Semester Academic Performance
+
+Before interpreting the gradig results, please note that the grading system used in this dataset differs from the U.S. system. Table 2 summarizes the distribution of Semester 1 average grades. The median grade is 12.3, with most grades falling between 11 (Q1) and 13.4 (Q3), and the maximum observed grade is 18.9. The mean is approximately 10.6, and the standard deviation is 4.84. These summary statistics highlight that the grading scale and grade distribution follow a different structure than commonly seen in U.S. institutions, and should be interpreted accordingly.
+
+```{r grade-summary, echo=FALSE, message=FALSE, warning=FALSE}
+# Create a summary table for a continuous variable
+summary_tbl <- train_data %>%
+  summarise(
+    Min = min(Sem1_AvgGrade, na.rm = TRUE),
+    Q1 = quantile(Sem1_AvgGrade, 0.25, na.rm = TRUE),
+    Median = median(Sem1_AvgGrade, na.rm = TRUE),
+    Mean = mean(Sem1_AvgGrade, na.rm = TRUE),
+    Q3 = quantile(Sem1_AvgGrade, 0.75, na.rm = TRUE),
+    Max = max(Sem1_AvgGrade, na.rm = TRUE),
+    SD = sd(Sem1_AvgGrade, na.rm = TRUE),
+    N = sum(!is.na(Sem1_AvgGrade))
+  ) %>%
+  tidyr::pivot_longer(everything(), names_to = "Statistic", values_to = "Value")
+
+# Output a formatted summary table
+summary_tbl %>%
+  kable(
+    caption = "Summary Statistics for Semester 1 Average Grade",
+    align = "lc",
+    booktabs = TRUE,
+    format = "latex",
+    linesep = ""
+  ) %>%
+  kable_styling(
+    full_width = TRUE,
+    position = "center",
+    latex_options = c("scale_down", "hold_position")
+  )
+```
+
+Figure 9 visualizes the relationship between the number of units students enrolled in during their first semester and their average grade, separated by final outcome. Each point represents an individual student, and the smoothed lines show the general trend for each group.
+
+The plot reveals that students who remained on track generally achieved higher average grades than those who dropped out, across almost all levels of course load. For students who enrolled in more units, the average grade for the “on_track” group remains consistently higher and shows a slight upward trend as units increase, while the “dropout” group’s average grade is lower and tends to level off or even decline at higher unit counts. This suggests that students who are able to successfully manage a larger course load tend to perform better academically and are more likely to persist.
+
+```{r - fig9, fig.cap="Trend: 1st Sem Avg Grade vs. Units Enrolled by Target"}
+ggplot(train_data, aes(x = Sem1_UnitsEnrolled, y = Sem1_AvgGrade, color = Target)) +
+  geom_point(alpha = 0.2, size = 1.2) +
+  geom_smooth(method = "loess", se = FALSE, size = 1.1) +
+  scale_color_brewer(palette = "Pastel1") +
+  labs(
+    x = "1st Semester Units Enrolled",
+    y = "1st Semester Average Grade"
+  ) +
+  theme_minimal()
+```
+
+### 2nd Semester Academic Performance
+
+Figure 10 plots 2nd semester average grade against units enrolled by student outcome, shows a trend similar to that seen in Figure 9 for the first semester. In both figures, students who remain on track consistently earn higher average grades than those who drop out, regardless of course load. The “on_track” group’s performance remains strong even as the number of units increases, while the “dropout” group’s average grades are lower and tend to plateau or decline with heavier course loads.
+
+```{r - fig10, fig.cap="Trend: 2nd Sem Avg Grade vs. Units Enrolled by Target"}
+ggplot(train_data, aes(x = Sem2_UnitsEnrolled, y = Sem2_AvgGrade, color = Target)) +
+  geom_point(alpha = 0.2, size = 1.2) +
+  geom_smooth(method = "loess", se = FALSE, size = 1.1) +
+  scale_color_brewer(palette = "Pastel1") +
+  labs(
+    x = "2nd Semester Units Enrolled",
+    y = "2nd Semester Average Grade"
+  ) +
+  theme_minimal()
+```
+
+### Application Mode
+
+Figure 11 shows the breakdown of student outcomes by application mode, with each bar illustrating the proportion of students who were either “on track” or had dropped out. Notably, the dropout rates vary widely across different application modes; for example, certain categories such as “Ordinance\_854\_B\_99” and “Ordinance\_533\_A\_b2/b3” exhibit dropout rates as high as 100%, whereas others like “1st\_phase\_special\_Azores” and “international\_student” show much lower dropout rates. This variation highlights that the way in which students enter the institution—through different application modes—is associated with their subsequent academic outcomes. The differences across modes may reflect a range of underlying factors, such as student motivation, or specific institutional pathways, which can significantly impact persistence.
+
+```{r - fig11, fig.cap="Target Result Breakdown by Application Mode", fig.height = 8}
+# Summarize percentages for each Target within Application Mode
+appmode_plot_data <- train_data %>%
+  group_by(Application_mode, Target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Application_mode) %>%
+  mutate(perc = 100 * n / sum(n)) %>%
+  ungroup()
+
+# Stacked bar plot
+ggplot(appmode_plot_data, aes(x = Application_mode, y = perc, fill = Target)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(
+    aes(label = ifelse(perc > 5, paste0(round(perc, 1), "%"), "")),
+    position = position_stack(vjust = 0.5), size = 3
+  ) +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, 25),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "Application Mode",
+    y = "Percentage"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1, size = 10),
+    legend.position = "bottom"
+  )
+```
+
+### Application Order
+
+Figure 12 shows the relationship between application order and subsequent student outcomes. The on-track rate, shown in blue, increases as the application order rises, while the dropout rate, depicted in red, correspondingly decreases. Interestingly, this trend goes somewhat against common expectations, as one might assume students admitted through their first-choice application would be more likely to succeed. However, this pattern suggests that in the Portuguese context, students who enter through later application choices are actually more likely to persist. This may be due to differences in the national application process or other unique factors within the Portuguese higher education system. In any case, we respect what the data shows us here and recognize that application order is a meaningful factor in predicting student persistence.
+
+```{r - fig12, fig.cap="On-track and Dropout Rates by Application Order"}
+rate_df <- train_data %>%
+  group_by(Application_order) %>%
+  summarise(
+    dropout = mean(Target == "dropout") * 100,
+    on_track = mean(Target == "on_track") * 100
+  )
+
+# Convert to long format for plotting
+rate_long <- rate_df %>%
+  pivot_longer(
+    cols = c(dropout, on_track),
+    names_to = "Outcome",
+    values_to = "Percent"
+  )
+
+# Assign pastel colors
+pastel_colors <- c("dropout" = "#FBB4AE",   # Pastel1[1]: light blue
+                   "on_track" = "#B3CDE3")  # Pastel1[2]: light pink
+
+# Plot 
+ggplot(rate_long, aes(x = Application_order, y = Percent, color = Outcome, group = Outcome)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_text(
+    aes(label = round(Percent, 1)),
+    vjust = -0.8, fontface = "bold", size = 3.5, show.legend = FALSE
+  ) +
+  scale_color_manual(
+    values = pastel_colors,
+    labels = c("Dropout Rate", "On-track Rate")
+  ) +
+  scale_x_continuous(breaks = 0:9) +
+  labs(
+    x = "Application Order (0 = First Choice)",
+    y = "Rate (%)",
+    color = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+## Program Characteristics
+
+### Major
+
+Figure 13 shows the distribution of student outcomes across different majors. The results show a clear variation in persistence and dropout rates among different fields of study. For example, majors such as Nursing and Social Service have the highest on-track rates (84.3% and 81.3%, respectively), while programs like Biofuel Production Technology, Equinculture, and Informatics Engineering have much lower on-track rates and correspondingly higher dropout rates. This variation is likely influenced by the innate nature and demands of different academic programs. Some fields may be inherently more challenging, either academically or in terms of required skills, leading to higher dropout rates. 
+
+```{r - fig13, fig.cap="Target Status Breakdown by Major (Ordered by Graduation Rate), fig.height = 8"}
+# Calculate percentages by major and target
+major_target <- train_data %>%
+  group_by(Major, Target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Major) %>%
+  mutate(perc = 100 * n / sum(n)) %>%
+  ungroup()
+
+# Find graduation rate for each major and reorder
+on_track_order <- major_target %>%
+  filter(Target == "on_track") %>%
+  arrange(desc(perc)) %>%
+  pull(Major)
+
+major_target$Major <- factor(major_target$Major, levels = on_track_order)
+
+# Plot
+ggplot(major_target, aes(y = Major, x = perc, fill = Target)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(
+    aes(label = ifelse(perc > 7, paste0(round(perc, 1), "%"), "")),
+    position = position_stack(vjust = 0.5),
+    size = 2.8
+  ) +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_x_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 25),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    y = "Major (Ordered by On-track Rate)",
+    x = "Percentage"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y = element_text(size = 10))
+```
+
+### Daytime/Evening Attendance
+
+Figure 14 shows the breakdown of student outcomes by attendance type. For daytime students, 69% remain on track while 31% drop out. In contrast, evening students have a lower on-track rate at 58.6% and a higher dropout rate at 41.4%. This visual shows that students attending in the evening are more likely to drop out compared to those attending during the day.
+
+```{r - fig14, fig.cap="Target Status Breakdown by Attendance Type"}
+# Prepare data: percentages for each target within each attendance type
+attendance_target <- train_data %>%
+  group_by(Is_Daytime_Attendance, Target) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Is_Daytime_Attendance) %>%
+  mutate(perc = 100 * n / sum(n)) %>%
+  ungroup()
+
+# Convert binary variable to a readable label
+attendance_target$AttendanceType <- ifelse(attendance_target$Is_Daytime_Attendance == 1, "Daytime", "Evening")
+
+ggplot(attendance_target, aes(x = AttendanceType, y = perc, fill = Target)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(
+    aes(label = ifelse(perc > 7, paste0(round(perc, 1), "%"), "")),
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 25),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "Attendance Type",
+    y = "Percentage"
+  ) +
+  theme_minimal(base_size = 13)
+```
+\newpage
+
+# **Methods**
+## Data Partition
+To ensure robust model development and unbiased performance evaluation, the dataset was partitioned into distinct training, validation, and final hold-out sets. The `createDataPartition` function from the `caret` package was used to randomly assign 90% of the student records to the training/validation set, with the remaining 10% reserved as a final hold-out set for assessing generalizability. To avoid issues arising from unseen categorical values, the final hold-out set was filtered so that all levels of key variables, such as major, application mode, marital status, attendance type, parental education, special needs, and international status, matched those present in the training/validation set. This was accomplished using a series of `semi_join` operations, which restricted the hold-out set to only those students whose attributes were already represented in the training data.
+
+Any observations in the hold-out split with novel or unmatched categories were returned to the training/validation set using `anti_join` and `rbind`, thereby maximizing the data available for model fitting while maintaining evaluation integrity. The training/validation set was further split into internal training and validation subsets to support parameter tuning and model selection. Throughout this process, care was taken to ensure that the model was always evaluated on student cases for which all relevant contextual information was available in the training data, thereby preventing data leakage and ensuring a reliable estimate of real-world model performance.
+
+## Model Building
+
+### Random 
+
+To begin our modeling process, we trained a Random Forest classifier using the training subset of our data. The Random Forest algorithm is a powerful ensemble method that constructs multiple decision trees and aggregates their predictions for improved accuracy and robustness. We used 500 trees and applied cross-validation to optimize model performance and prevent overfitting. After training, the model's predictions were evaluated on a hold-out validation set, with an accuracy of 0.8211587.
+
+```{r rf, echo=FALSE, message=FALSE, warning=FALSE}
+# Train-Test Split
+set.seed(123) 
+idx <- createDataPartition(train_data$Target, times = 1, p = 0.9, list = FALSE)
+train_data_train <- train_data[idx, ]
+train_data_val <- train_data[-idx, ]
+
+# Random Forest
+rf_fit <- train(
+  Target ~ .,
+  data = train_data_train,
+  method = "rf",           
+  ntree = 500,             
+  trControl = trainControl(method = "cv") # "cv" for cross-validation
+)
+
+rf_pred <- predict(rf_fit, newdata = train_data_val)
+rf_conf <- confusionMatrix(rf_pred, train_data_val$Target)
+rf_accuracy <- rf_conf$overall["Accuracy"]
+print(rf_accuracy)
+print(rf_conf$table)  
+```
+
+### KNN
+
+Next, we implemented the k-Nearest Neighbors (KNN) algorithm, which classifies each student based on the majority outcome of its closest neighbors in the feature space. The optimal value of k was determined via cross-validation within the caret package. KNN's performance was also assessed using the validation set, resulting in an accuracy of 0.7178841.
+
+```{r knn, echo=FALSE, message=FALSE, warning=FALSE}
+knn_fit <- train(Target ~ ., data = train_data_train, method = "knn", tuneLength = 5)
+knn_pred <- predict(knn_fit, newdata = train_data_val)
+knn_conf <- confusionMatrix(knn_pred, train_data_val$Target)
+knn_accuracy <- knn_conf$overall["Accuracy"]
+print(knn_accuracy)
+print(knn_conf$table)  
+```
+
+### Naive Bayes
+
+We then built a Naive Bayes classifier, a probabilistic model based on Bayes’ Theorem and the assumption of feature independence. This simple yet effective model is often competitive for classification tasks involving categorical data. The model’s accuracy on the validation set was 0.7329975.
+
+```{r nb, echo=FALSE, message=FALSE, warning=FALSE}
+nb_fit <- train(Target ~ ., data = train_data_train, method = "naive_bayes")
+nb_pred <- predict(nb_fit, newdata = train_data_val)
+nb_conf <- confusionMatrix(nb_pred, train_data_val$Target)
+nb_accuracy <- nb_conf$overall["Accuracy"]
+print(nb_accuracy)
+print(nb_conf$table)  
+```
+
+### Gradient Boosted Trees (xgboost)
+
+Additionally, we trained a Gradient Boosted Trees model using the xgboost implementation, which builds an ensemble of trees sequentially, each one learning from the errors of the previous. This model is known for its high predictive power, especially with tabular data. Cross-validation was used to select the best hyperparameters. The validation accuracy for this model was 0.8161209.
+
+```{r xgboost, echo=FALSE, message=FALSE, warning=FALSE, results=FALSE}
+gbm_fit <- train(
+  Target ~ .,
+  data = train_data_train,
+  method = "xgbTree",
+  trControl = trainControl(method = "cv", number = 5), # 5-fold cross-validation
+  tuneLength = 3
+)
+
+gbm_pred <- predict(gbm_fit, newdata = train_data_val)
+gbm_conf <- confusionMatrix(gbm_pred, train_data_val$Target)
+gbm_accuracy <- gbm_conf$overall["Accuracy"]
+```
+
+```{r xgboost-result, echo=FALSE, message=FALSE, warning=FALSE}
+print(gbm_accuracy)
+print(gbm_conf$table)  
+```
+
+### Ensemble (Majority Vote)
+
+To leverage the strengths of individual models, we constructed an ensemble model using a majority voting scheme. The predictions from Random Forest, KNN, Naive Bayes, and Gradient Boosted Trees were combined, and the final prediction was assigned based on the majority vote. This approach yielded an ensemble accuracy of 0.8136020.
+
+```{r ensemble1, echo=FALSE, message=FALSE, warning=FALSE}
+ensemble1 <- cbind(rf = rf_pred == "on_track", 
+                   knn = knn_pred == "on_track", 
+                  nb  = nb_pred == "on_track",
+                  gbm = gbm_pred == "on_track")
+
+ensemble_preds1 <- ifelse(rowMeans(ensemble1) > 0.5, "on_track", "dropout")
+ensemble_accuracy1 <- mean(ensemble_preds1 == train_data_val$Target)
+print(ensemble_accuracy1) 
+```
+
+### Ensemble for the 2nd try: omit KNN model
+
+Upon reviewing individual model performance, we noticed that the KNN model had relatively lower accuracy, which negatively impacted the overall ensemble. Therefore, we constructed a second ensemble model using only Random Forest, Naive Bayes, and Gradient Boosted Trees. This refined ensemble demonstrated improved performance, achieving an accuracy of 0.8211587.
+
+```{r ensemble2, echo=FALSE, message=FALSE, warning=FALSE}
+ensemble2 <- cbind(rf = rf_pred == "on_track", 
+                   nb  = nb_pred == "on_track",
+                   gbm = gbm_pred == "on_track")
+
+ensemble_preds2 <- ifelse(rowMeans(ensemble2) > 0.5, "on_track", "dropout")
+ensemble_accuracy2 <- mean(ensemble_preds2 == train_data_val$Target)
+
+model_accuracies <- data.frame(
+  Model    = c("Random Forest", "KNN", "Naive Bayes", "Gradient Boosted Trees", "Ensemble (4 models)", "Ensemble (3 models)"),
+  Accuracy = c(rf_accuracy, knn_accuracy, nb_accuracy, gbm_accuracy, ensemble_accuracy1, ensemble_accuracy2)
+)
+
+print(model_accuracies)  
+```
+
+# **Result**
+
+## Model Result
+
+To evaluate the final models, we applied each to the independent validation set and compared their predictive accuracy. The following table summarizes the performance of all models and ensemble combinations.
+
+Though both the four-model and three-model ensemble approaches achieved the highest overall accuracy (0.8684807), the three-model ensemble (exluding KNN) is selected as the final model. This decision was based on the consistently lower performance of the KNN model (accuracy of 0.7823129) relative to the other models. Including KNN in the ensemble did not yield any improvement in predictive performance and could introduce unnecessary complexity or potential instability.
+
+```{r final-validation, echo=FALSE, message=FALSE, warning=FALSE}
+# Predict on validation set
+rf_pred_val <- predict(rf_fit, newdata = validation)
+knn_pred_val <- predict(knn_fit, newdata = validation)
+nb_pred_val <- predict(nb_fit, newdata = validation)
+gbm_pred_val <- predict(gbm_fit, newdata = validation)
+
+# Two ways of Ensemble
+ensemble1 <- cbind(
+  rf  = rf_pred_val == "on_track",
+  knn = knn_pred_val == "on_track",
+  nb  = nb_pred_val == "on_track",
+  gbm = gbm_pred_val == "on_track"
+)
+
+ensemble_preds1 <- ifelse(rowMeans(ensemble1) > 0.5, "on_track", "dropout")
+ensemble_accuracy1 <- mean(ensemble_preds1 == validation$Target)
+
+ensemble2 <- cbind(
+  rf  = rf_pred_val == "on_track",
+  nb  = nb_pred_val == "on_track",
+  gbm = gbm_pred_val == "on_track"
+)
+
+ensemble_preds2 <- ifelse(rowMeans(ensemble2) > 0.5, "on_track", "dropout")
+ensemble_accuracy2 <- mean(ensemble_preds2 == validation$Target)
+
+# Accuracies for individual models
+rf_acc <- mean(rf_pred_val == validation$Target)
+knn_acc <- mean(knn_pred_val == validation$Target)
+nb_acc <- mean(nb_pred_val == validation$Target)
+gbm_acc <- mean(gbm_pred_val == validation$Target)
+
+# Make accuracy table
+model_accuracies <- data.frame(
+  Model    = c("Random Forest", "KNN", "Naive Bayes", "Gradient Boosted Trees", "Ensemble (4 models)", "Ensemble (3 models)"),
+  Accuracy = c(rf_acc, knn_acc, nb_acc, gbm_acc, ensemble_accuracy1, ensemble_accuracy2)
+)
+
+print(model_accuracies)  
+```
+
+## Model Performance
+
+To further evaluate the model's effectiveness, we examined the confusion matrix for the three-model ensemble on the validation set below.The ensemble model correctly identifies about 71.8% of students who will drop out and 94.0% of those who will stay on track. Such performance indicates the ensemble is effective both at detecting at-risk students and minimizing false alarms, supporting its use for targeted intervention strategies.
+
+```{r compare, echo=FALSE, message=FALSE, warning=FALSE}
+ensemble_preds2 <- factor(ensemble_preds2, levels = levels(validation$Target))
+
+ensemble_confmat <- confusionMatrix(ensemble_preds2, validation$Target)
+print(ensemble_confmat$table)  
+```
+\newpage
+
+# **Conclusion**
+
+## Summary
+
+This project explored predictive modeling for student dropout and academic success using a comprehensive, institution-level dataset from the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/697/predict+students+dropout+and+academic+success). The analysis included careful data cleaning and feature engineering, followed by systematic model building using Random Forest, k-Nearest Neighbors, Naive Bayes, and Gradient Boosting. Model performance was assessed using a final hold-out validation set, with Random Forest and Gradient Boosting achieving the highest individual accuracies (0.8639 and 0.8662 respectively). In addition, ensemble approaches combining Random Forest, Gradient Boosting, and Naive Bayes were evaluated and demonstrated superior performance compared to the best single models. Attempts to include all four models in the ensemble did not improve overall accuracy, primarily due to the relatively low performance of the k-Nearest Neighbors model. As a result, excluding k-Nearest Neighbors from the ensemble is chosen as the optimal model
+
+## Potential Impact
+
+The potential impact of this work lies in its ability to help educational institutions proactively identify and support students who may be at risk of dropping out, thereby improving both student outcomes and institutional retention rates. By leveraging multiple data sources such as macroeconomic context, demographics, academic history, and program characteristics, the models offer a holistic approach to early warning and intervention.
+
+## Limitations
+
+Several limitations of this analysis should be acknowledged. First, while the validation set provides useful insights into model performance, its relatively modest size (441 records) may not fully reflect the diversity of student experiences within the broader population. Additionally, the target variable is imbalanced, with a considerably larger proportion of “on_track” cases (3,003) compared to “dropout” cases (1,421). This imbalance may lead the models to favor the majority class, potentially resulting in an underestimation of dropout risk. Furthermore, the dataset is derived from a single institution, which may limit the generalizability of the findings to other educational contexts. Additional research using data from multiple institutions would be necessary to confirm the robustness and broader applicability of these results.
+
+## Future Work
+
+Future work could address these limitations by collecting more extensive and diverse datasets, applying advanced resampling or class-weighting techniques to address imbalance, and exploring other machine learning approaches such as matrix factorization or neural networks. Collaborating with institutional stakeholders to incorporate additional features such as student engagement data, financial information, or qualitative feedback could further enhance predictive performance and actionable insights for student success initiatives.
